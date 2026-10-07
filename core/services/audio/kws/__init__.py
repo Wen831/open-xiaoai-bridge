@@ -5,6 +5,7 @@ import time
 
 from core.ref import get_app, get_xiaoai, get_xiaozhi, set_kws
 from core.services.audio.kws.sherpa import SherpaOnnx
+from core.services.audio.kws.verify import KwsAsrVerifier
 from core.services.audio.stream import MyAudio
 from core.services.audio.vad.silero import Silero
 from core.services.protocols.typing import AudioConfig, DeviceState
@@ -32,6 +33,7 @@ class _KWS:
         self.frame_duration_ms = (self.frame_size * 1000) / self.sample_rate  # 32ms per frame
 
         self.apply_runtime_config()
+        self.verifier = KwsAsrVerifier(self.frame_size, self.sample_rate)
         self.config_manager.add_reload_listener(self._on_config_reload)
 
     def apply_runtime_config(self):
@@ -45,6 +47,7 @@ class _KWS:
     def _on_config_reload(self, *_args):
         """配置重载后刷新运行时参数。"""
         self.apply_runtime_config()
+        self.verifier.apply_runtime_config()
 
     def start(self):
         self.audio = MyAudio.create()
@@ -87,6 +90,9 @@ class _KWS:
                 time.sleep(0.01)
                 continue
 
+            # 无条件存入复核环形缓冲(与检测节奏同步,覆盖触发点前完整音频)
+            self.verifier.push(frames)
+
             # 在说话和监听状态时，暂停 KWS
             xiaozhi = get_xiaozhi()
             if (
@@ -115,6 +121,8 @@ class _KWS:
                 
                 # 只在有语音时才进行 KWS 检测
                 result = SherpaOnnx.kws(frames)
+                if result and not self.verifier.verify(result):
+                    result = None
                 if result:
                     logger.wakeup(result, module="KWS")
                     self.on_message(result)
@@ -131,6 +139,8 @@ class _KWS:
                     if self.vad_silence_frames <= self.vad_min_silence_frames:
                         # 继续将音频送入 KWS，允许短暂的静音
                         result = SherpaOnnx.kws(frames)
+                        if result and not self.verifier.verify(result):
+                            result = None
                         if result:
                             logger.wakeup(result, module="KWS")
                             self.on_message(result)

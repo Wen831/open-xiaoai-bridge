@@ -53,13 +53,63 @@ def should_generate_keywords():
 
 def get_args():
     config = ConfigManager.instance()
-    tokens_type = "cjkchar+bpe"
     tokens = get_model_file_path("tokens.txt")
     bpe_model = get_model_file_path("bpe.model")
     output = get_model_file_path("keywords.txt")
     keywords = config.get_app_config("wakeup.keywords", [])
+    # 音素版唤醒词行(模型包无 bpe.model 时使用,如 zh-en-3M 系列)
+    phonemes = config.get_app_config("wakeup.keywords_phonemes", [])
     texts = [f"{keyword.upper()}" for keyword in keywords]
     return locals()
+
+
+def _load_token_set(tokens_path: str) -> set:
+    """读取 tokens.txt 的 token 集合(每行 "token id" 或 "token")。"""
+    tokens = set()
+    with open(tokens_path, "r", encoding="utf8") as f:
+        for line in f:
+            parts = line.split()
+            if parts:
+                tokens.add(parts[0])
+    return tokens
+
+
+def write_phoneme_keywords(phonemes, tokens_path: str, output: str) -> int:
+    """音素模式:逐行校验配置中的音素唤醒词后写入 keywords.txt。
+
+    行格式: "tok tok ... @输出标签",@ 之前为模型音素序列(参与校验),
+    @ 之后为输出标签(不参与校验,与 sherpa-onnx keywords 文件格式一致)。
+    """
+    token_set = _load_token_set(tokens_path)
+    lines = []
+    for line in phonemes:
+        if not isinstance(line, str) or not line.strip():
+            continue
+        tokens = line.split()
+        stop = next(
+            (i for i, t in enumerate(tokens) if t.startswith("@")),
+            len(tokens),
+        )
+        body, label = tokens[:stop], tokens[stop:]
+        unknown = [t for t in body if t not in token_set]
+        if unknown:
+            logger.error(
+                f"Keyword line has unknown tokens {unknown}: {line}",
+                module="KWS",
+            )
+            continue
+        lines.append(" ".join(body + label))
+    if not lines:
+        logger.error(
+            "No valid phoneme keyword lines in wakeup.keywords_phonemes",
+            module="KWS",
+        )
+        return 1
+    with open(output, "w", encoding="utf8") as f:
+        for line in lines:
+            f.write(line + "\n")
+    logger.debug(f"Keyword file generated (phoneme mode): {output}", module="KWS")
+    return 0
 
 
 def main():
@@ -68,11 +118,8 @@ def main():
         logger.debug(f"Keyword generation skipped: {reason}", module="KWS")
         return 0
 
-    required_files = [
-        get_model_file_path("tokens.txt"),
-        get_model_file_path("bpe.model"),
-    ]
-    missing_files = [path for path in required_files if not Path(path).is_file()]
+    required_files = [Path(get_model_file_path("tokens.txt"))]
+    missing_files = [path for path in required_files if not path.is_file()]
     if missing_files:
         logger.debug(
             "Keyword generation failed: missing model files: "
@@ -81,13 +128,22 @@ def main():
         )
         return 1
 
+    args = get_args()
+
+    bpe_path = Path(args["bpe_model"])
+    if not bpe_path.is_file():
+        # 音素版模型(如 sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20)
+        # 不带 bpe.model,cjkchar+bpe 切分不可用,改用配置直供的音素行
+        return write_phoneme_keywords(
+            args["phonemes"], args["tokens"], args["output"]
+        )
+
     from sherpa_onnx import text2token
 
-    args = get_args()
     encoded_texts = text2token(
         args["texts"],
         tokens=args["tokens"],
-        tokens_type=args["tokens_type"],
+        tokens_type="cjkchar+bpe",
         bpe_model=args["bpe_model"],
     )
     with open(args["output"], "w", encoding="utf8") as f:
