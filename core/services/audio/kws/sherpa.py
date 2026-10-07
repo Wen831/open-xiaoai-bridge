@@ -10,11 +10,12 @@ class _SherpaOnnx:
         config = ConfigManager.instance()
         keywords_score = config.get_app_config("kws.keywords_score", 2.0)
         keywords_threshold = config.get_app_config("kws.keywords_threshold", 0.2)
+        max_active_paths = int(config.get_app_config("kws.max_active_paths", 8))
 
         self.keyword_spotter = sherpa_onnx.KeywordSpotter(
             provider="cpu",
             num_threads=1,
-            max_active_paths=8,
+            max_active_paths=max_active_paths,
             keywords_score=keywords_score,
             keywords_threshold=keywords_threshold,
             num_trailing_blanks=0,

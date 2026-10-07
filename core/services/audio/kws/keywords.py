@@ -77,8 +77,9 @@ def _load_token_set(tokens_path: str) -> set:
 def write_phoneme_keywords(phonemes, tokens_path: str, output: str) -> int:
     """音素模式:逐行校验配置中的音素唤醒词后写入 keywords.txt。
 
-    行格式: "tok tok ... @输出标签",@ 之前为模型音素序列(参与校验),
-    @ 之后为输出标签(不参与校验,与 sherpa-onnx keywords 文件格式一致)。
+    行格式: "tok tok ... [:boost] [#threshold] [@输出标签]"。
+    以 :/#/@ 开头的是 sherpa-onnx 行内特殊标记(:词级加成分数、#词级阈值、
+    @输出标签),不参与 token 校验,原样透传;其余 token 必须在 tokens.txt 中。
     """
     token_set = _load_token_set(tokens_path)
     lines = []
@@ -86,11 +87,11 @@ def write_phoneme_keywords(phonemes, tokens_path: str, output: str) -> int:
         if not isinstance(line, str) or not line.strip():
             continue
         tokens = line.split()
-        stop = next(
-            (i for i, t in enumerate(tokens) if t.startswith("@")),
-            len(tokens),
-        )
-        body, label = tokens[:stop], tokens[stop:]
+        body = [
+            t
+            for t in tokens
+            if not t.startswith((":", "#", "@"))
+        ]
         unknown = [t for t in body if t not in token_set]
         if unknown:
             logger.error(
@@ -98,7 +99,7 @@ def write_phoneme_keywords(phonemes, tokens_path: str, output: str) -> int:
                 module="KWS",
             )
             continue
-        lines.append(" ".join(body + label))
+        lines.append(" ".join(tokens))
     if not lines:
         logger.error(
             "No valid phoneme keyword lines in wakeup.keywords_phonemes",
